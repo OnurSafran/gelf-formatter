@@ -7,9 +7,11 @@ using Serilog.Formatting;
 
 public sealed class GelfFormatter : ITextFormatter
 {
-	const string GelfVersion = "1.0";
-	readonly string _host = Dns.GetHostName();
-	static readonly DateTime LinuxEpoch = new DateTime(1970, 1, 1);
+	private const string GelfVersion = "1.0";
+	private static readonly string Host = Dns.GetHostName();
+	private static readonly string? EnvironmentName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+	private static readonly DateTime LinuxEpoch = new DateTime(1970, 1, 1);
+
 	private readonly string _facility;
 
 	public GelfFormatter(string facility)
@@ -24,19 +26,21 @@ public sealed class GelfFormatter : ITextFormatter
 	
 	public void Format(LogEvent e, TextWriter output)
 	{
-		var renderMessage = e.RenderMessage(CultureInfo.InvariantCulture);
-		
-		var message = new
-		{
-			formatterVersion = GelfVersion,
-			host = _host,
-			level = GetSeverityLevel(e.Level),
-			facility = _facility,
-			message = renderMessage,
-			_imestamp = DateTimeToUnixTimestamp(e.Timestamp),
-		};
+        ArgumentNullException.ThrowIfNull(e);
+        ArgumentNullException.ThrowIfNull(output);
 
-		var json = JObject.FromObject(message);
+        var renderMessage = e.RenderMessage(CultureInfo.InvariantCulture);
+		
+		var json = new JObject
+		{
+			["formatterVersion"] = GelfVersion,
+			["host"] = Host,
+			["level"] = GetSeverityLevel(e.Level),
+			["facility"] = _facility,
+			["message"] = renderMessage,
+			["_timestamp"] = DateTimeToUnixTimestamp(e.Timestamp),
+			["_environment"] = EnvironmentName
+		};
 		
 		//We will persist them "Additional Fields" according to Gelf spec
 		foreach (var property in e.Properties)
@@ -50,10 +54,7 @@ public sealed class GelfFormatter : ITextFormatter
 			AddAdditionalField(json, "StackTrace", e.Exception.StackTrace);
 		} 
 		
-		AddAdditionalField(json, "_environment", Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"));
-		if (json == null) return;
-		var jsonString = json.ToString(Formatting.None, null);
-		output.WriteLine(jsonString);
+		output.WriteLine(json.ToString(Formatting.None));
 	}
 	
 	private static object? ParsePropertyValue(LogEventPropertyValue value)
@@ -68,7 +69,7 @@ public sealed class GelfFormatter : ITextFormatter
 	}
 	private static List<object?> ParseSequence(SequenceValue sequence)
 	{
-		var parsedSequence = new List<object?>();
+		var parsedSequence = new List<object?>(sequence.Elements.Count));
 		foreach (var item in sequence.Elements)
 		{
 			var parsedItem = ParsePropertyValue(item);
@@ -82,7 +83,7 @@ public sealed class GelfFormatter : ITextFormatter
 
 	private static Dictionary<string, object> ParseStructure(StructureValue structure)
 	{
-		var parsedStructure = new Dictionary<string, object>();
+		var parsedStructure = new Dictionary<string, object>(structure.Properties.Count);
 		foreach (var property in structure.Properties)
 		{
 			var parsedItem = ParsePropertyValue(property.Value);
@@ -94,45 +95,31 @@ public sealed class GelfFormatter : ITextFormatter
 		return parsedStructure;
 	}
 	
-	/// <summary>
-	/// Values from SyslogSeverity enum here: http://marc.info/?l=log4net-dev&m=109519564630799
-	/// </summary>
-	/// <param name="level"></param>
-	/// <returns></returns>
-	static int GetSeverityLevel(LogEventLevel level)
-	{
-		switch (level)
+	static int GetSeverityLevel(LogEventLevel level) =>
+		level switch
 		{
-			case LogEventLevel.Verbose:
-				return 7;
-			case LogEventLevel.Debug:
-				return 7;
-			case LogEventLevel.Information:
-				return 6;
-			case LogEventLevel.Warning:
-				return 4;
-			case LogEventLevel.Error:
-				return 3;
-			case LogEventLevel.Fatal:
-				return 2;
-			default:
-				throw new ArgumentOutOfRangeException("level");
-		}
-	}
+			LogEventLevel.Verbose or LogEventLevel.Debug => 7,
+			LogEventLevel.Information => 6,
+			LogEventLevel.Warning => 4,
+			LogEventLevel.Error => 3,
+			LogEventLevel.Fatal => 2,
+			_ => throw new ArgumentOutOfRangeException(nameof(level))
+		};
 
 	static void AddAdditionalField(IDictionary<string, JToken> jObject, string key, object? value)
 	{
-		if (key == null) return;
+		if (string.IsNullOrWhiteSpace(key)) return;
 
 		//According to the GELF spec, libraries should NOT allow to send id as additional field (_id)
 		//Server MUST skip the field because it could override the MongoDB _key field
-		if (key.Equals("id", StringComparison.OrdinalIgnoreCase))
-			key = "id_";
-
+		if (key.Equals("id", StringComparison.OrdinalIgnoreCase)) key = "id_";
 		//According to the GELF spec, additional field keys should start with '_' to avoid collision
-		if (!key.StartsWith("_", StringComparison.OrdinalIgnoreCase))
-			key = "_" + key;
+		if (!key.StartsWith("_", StringComparison.OrdinalIgnoreCase)) key = "_" + key;
 
-		jObject.Add(key, value.ToString());
+		// Avoid adding null values
+		if (value != null)
+		{
+			jObject[key] = JToken.FromObject(value);
+		}
 	}
 }
