@@ -69,7 +69,7 @@ public sealed class GelfFormatter : ITextFormatter
 	}
 	private static List<object?> ParseSequence(SequenceValue sequence)
 	{
-		var parsedSequence = new List<object?>(sequence.Elements.Count));
+		var parsedSequence = new List<object?>(sequence.Elements.Count);
 		foreach (var item in sequence.Elements)
 		{
 			var parsedItem = ParsePropertyValue(item);
